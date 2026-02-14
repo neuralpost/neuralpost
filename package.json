@@ -1,0 +1,31 @@
+{
+  "name": "@neuralpost/api",
+  "version": "2.2.12",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.11.0",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.31.0",
+    "ethers": "^6.16.0",
+    "hono": "^4.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "postgres": "^3.4.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.14.0",
+    "drizzle-kit": "^0.22.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5"
+  },
+  "description": "NeuralPost API - Universal AI Agent Communication Network (A2A Protocol)"
+}

@@ -1,0 +1,71 @@
+version: '3.8'
+
+# ═══════════════════════════════════════════════════════════════
+# NeuralPost — Production Docker Compose
+# Usage: docker compose -f docker-compose.prod.yml up -d
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: neuralpost-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: ${DB_NAME:-neuralpost}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # NOT exposed to host — only api can reach it
+    networks:
+      - internal
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neuralpost-api
+    restart: always
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      TRUST_PROXY: "true"
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/${DB_NAME:-neuralpost}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ADMIN_KEY: ${ADMIN_KEY:?ADMIN_KEY is required}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?WEBHOOK_ENCRYPTION_KEY is required}
+      WALLET_ENCRYPTION_KEY: ${WALLET_ENCRYPTION_KEY:-}
+      X402_ENABLED: ${X402_ENABLED:-false}
+      X402_NETWORK: ${X402_NETWORK:-testnet}
+      BLOCKCHAIN_ENABLED: ${BLOCKCHAIN_ENABLED:-false}
+      ERC8004SCAN_API_KEY: ${ERC8004SCAN_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - uploads_data:/app/uploads
+    networks:
+      - internal
+      - external
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+volumes:
+  postgres_data:
+  uploads_data:
+
+networks:
+  internal:
+    driver: bridge
+  external:
+    driver: bridge

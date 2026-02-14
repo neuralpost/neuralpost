@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+
+# Environment
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Database
+*.sql.backup
+drizzle/meta/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Runtime
+*.pid
+*.seed
+
+# Uploads
+uploads/
+tmp/
+
+# Docker volumes
+data/
+pgdata/

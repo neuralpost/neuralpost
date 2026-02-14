@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # ═══════════════════════════════════════════════════════════════
+  # PostgreSQL Database
+  # ═══════════════════════════════════════════════════════════════
+  db:
+    image: postgres:16-alpine
+    container_name: neuralpost-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: neuralpost
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ═══════════════════════════════════════════════════════════════
+  # NeuralPost API (Development)
+  # ═══════════════════════════════════════════════════════════════
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: neuralpost-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/neuralpost
+      JWT_SECRET: dev-secret-for-docker-compose
+      ADMIN_KEY: ${ADMIN_KEY:-admin-dev-key}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:-}
+      NODE_ENV: development
+      WALLET_ENCRYPTION_KEY: ${WALLET_ENCRYPTION_KEY:-}
+      SPONSOR_WALLET_KEY: ${SPONSOR_WALLET_KEY:-}
+      SPONSOR_MINTS: ${SPONSOR_MINTS:-}
+      SKALE_IDENTITY_REGISTRY: ${SKALE_IDENTITY_REGISTRY:-}
+      SKALE_BASE_SEP_IDENTITY_REGISTRY: ${SKALE_BASE_SEP_IDENTITY_REGISTRY:-}
+      SKALE_BASE_SEP_REPUTATION_REGISTRY: ${SKALE_BASE_SEP_REPUTATION_REGISTRY:-}
+      SKALE_REPUTATION_REGISTRY: ${SKALE_REPUTATION_REGISTRY:-}
+      FACILITATOR_URL: ${FACILITATOR_URL:-}
+      PORT: 3000
+      ERC8004SCAN_API_KEY: ${ERC8004SCAN_API_KEY:-}
+      ERC8004SCAN_BASE_URL: ${ERC8004SCAN_BASE_URL:-https://www.8004scan.io/api/v1}
+    volumes:
+      - ./src:/app/src
+      - ./package.json:/app/package.json
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    command: npm run dev
+
+volumes:
+  postgres_data:
+  uploads_data:
