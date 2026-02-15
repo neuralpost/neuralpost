@@ -3,7 +3,8 @@
 // These packages ship ESM-only types (.d.mts) which aren't resolved
 // under moduleResolution: "node". Declarations here bridge the gap.
 //
-// Generated from actual CJS exports in node_modules/@x402/*/dist/cjs/
+// VERIFIED against @x402/core@2.3.1 + @x402/hono@2.3.0 actual source
+// Last checked: 2026-02-15
 // ═══════════════════════════════════════════════════════════════════════════
 
 declare module '@x402/hono' {
@@ -15,16 +16,14 @@ declare module '@x402/hono' {
     network: string;
     payTo: string;
     maxTimeoutSeconds?: number;
+    extra?: Record<string, unknown>;
   }
 
   export interface RouteConfig {
     accepts: RouteAcceptsConfig | RouteAcceptsConfig[];
     description?: string;
     mimeType?: string;
-    resource?: string;
     extensions?: Record<string, unknown>;
-    unpaidResponseBody?: (context: any) => Promise<any>;
-    customPaywallHtml?: string;
   }
 
   export type RoutesConfig = Record<string, RouteConfig>;
@@ -34,10 +33,7 @@ declare module '@x402/hono' {
     cdpClientKey?: string;
   }
 
-  /**
-   * Official @x402/hono paymentMiddleware
-   * Handles full flow: 402 → verify → next() → settle (deferred)
-   */
+  // paymentMiddleware(routes, server, paywallConfig?, paywall?, syncFacilitatorOnStart?)
   export function paymentMiddleware(
     routes: RoutesConfig,
     server: x402ResourceServer,
@@ -47,7 +43,7 @@ declare module '@x402/hono' {
   ): MiddlewareHandler;
 
   export function paymentMiddlewareFromHTTPServer(
-    httpServer: any,
+    httpServer: x402HTTPResourceServer,
     paywallConfig?: PaywallConfig,
     paywall?: any,
     syncFacilitatorOnStart?: boolean,
@@ -65,156 +61,96 @@ declare module '@x402/hono' {
   export class HonoAdapter {
     constructor(c: any);
     getHeader(name: string): string | undefined;
-    getAcceptHeader(): string;
-    getUserAgent(): string;
+    getMethod(): string;
+    getPath(): string;
     getUrl(): string;
   }
 
-  // Re-exported from @x402/core/server
-  export class x402ResourceServer {
-    constructor(facilitatorClients?: any);
-
-    register(network: string, scheme: any): this;
-    hasRegisteredScheme(network: string, scheme: string): boolean;
-
-    registerExtension(extension: any): this;
-    hasExtension(key: string): boolean;
-    getExtensions(): any[];
-
-    /** Fetch supported kinds from facilitator(s) — MUST call before verify/settle */
-    initialize(): Promise<void>;
-
-    /** Build payment requirements for a route config */
-    buildPaymentRequirements(resourceConfig: any): Promise<any[]>;
-
-    /** Build requirements from multiple payment options */
-    buildPaymentRequirementsFromOptions(paymentOptions: any[], context: any): Promise<any[]>;
-
-    /** Create 402 response object */
-    createPaymentRequiredResponse(
-      requirements: any[],
-      resourceInfo: any,
-      error?: string,
-      extensions?: any,
-    ): Promise<any>;
-
-    /**
-     * Verify a decoded payment payload against requirements.
-     * @param paymentPayload - Decoded PaymentPayload object (NOT raw base64 string)
-     * @param requirements - PaymentRequirement to verify against
-     */
-    verifyPayment(paymentPayload: any, requirements: any): Promise<{
-      isValid: boolean;
-      invalidReason?: string;
-      invalidMessage?: string;
-      payer?: string;
-    }>;
-
-    /**
-     * Settle a verified payment on-chain via facilitator.
-     * @param paymentPayload - Decoded PaymentPayload object (NOT raw base64 string)
-     * @param requirements - PaymentRequirement for settlement
-     * @param declaredExtensions - Optional extensions
-     */
-    settlePayment(paymentPayload: any, requirements: any, declaredExtensions?: any): Promise<{
-      success: boolean;
-      transaction?: string;
-      network?: string;
-      errorReason?: string;
-      errorMessage?: string;
-      extensions?: Record<string, any>;
-    }>;
-
-    /** Find matching requirements for a payment payload */
-    findMatchingRequirements(availableRequirements: any[], paymentPayload: any): any | undefined;
-
-    // Hooks
-    onBeforeVerify(hook: any): this;
-    onAfterVerify(hook: any): this;
-    onVerifyFailure(hook: any): this;
-    onBeforeSettle(hook: any): this;
-    onAfterSettle(hook: any): this;
-    onSettleFailure(hook: any): this;
-  }
-
-  export class x402HTTPResourceServer {
-    constructor(resourceServer: x402ResourceServer, routes: RoutesConfig);
-    get server(): x402ResourceServer;
-    get routes(): RoutesConfig;
-    initialize(): Promise<void>;
-    requiresPayment(context: any): boolean;
-    processHTTPRequest(context: any, paywallConfig?: PaywallConfig): Promise<any>;
-    processSettlement(paymentPayload: any, requirements: any, declaredExtensions?: any): Promise<any>;
-    onProtectedRequest(hook: any): this;
-    registerPaywallProvider(provider: any): this;
-  }
-
-  export class RouteConfigurationError extends Error {
-    constructor(errors: string[]);
-  }
+  // Re-exports from @x402/core/server
+  export { x402ResourceServer, x402HTTPResourceServer } from '@x402/core/server';
 }
 
 declare module '@x402/evm/exact/server' {
   export class ExactEvmScheme {
     constructor();
     readonly scheme: string;
-    parsePrice(price: string, network: string): Promise<any>;
-    enhancePaymentRequirements(requirements: any, kind: any, extensions?: any[]): Promise<any>;
+    parsePrice(price: string, network: string): Promise<{
+      amount: string;
+      asset: string;
+      extra?: Record<string, unknown>;
+    }>;
+    enhancePaymentRequirements(
+      baseRequirements: any,
+      supportedKind: any,
+      facilitatorExtensions: any[],
+    ): Promise<any>;
   }
 }
 
 declare module '@x402/core/server' {
   export interface FacilitatorClientConfig {
     url?: string;
-    createAuthHeaders?: (operation: string) => Promise<{ headers: Record<string, string> }> | { headers: Record<string, string> };
+    createAuthHeaders?: (action: string) => Promise<{ headers: Record<string, string> }>;
   }
 
   export class HTTPFacilitatorClient {
     constructor(config?: FacilitatorClientConfig);
-
-    /** Fetch supported payment kinds from facilitator */
-    getSupported(): Promise<{
-      kinds: Array<{
-        x402Version: number;
-        scheme: string;
-        network: string;
-      }>;
-      extensions?: any[];
-    }>;
-
-    /** Verify payment with facilitator POST /verify */
-    verify(paymentPayload: any, paymentRequirements: any): Promise<{
-      isValid: boolean;
-      invalidReason?: string;
-      invalidMessage?: string;
-      payer?: string;
-    }>;
-
-    /** Settle payment with facilitator POST /settle */
-    settle(paymentPayload: any, paymentRequirements: any): Promise<{
-      success: boolean;
-      transaction?: string;
-      network?: string;
-      errorReason?: string;
-      errorMessage?: string;
-    }>;
+    verify(paymentPayload: any, paymentRequirements: any): Promise<VerifyResponse>;
+    settle(paymentPayload: any, paymentRequirements: any): Promise<SettleResponse>;
+    getSupported(): Promise<{ kinds: any[]; extensions?: any[] }>;
   }
 
-  // Re-exports
+  export interface VerifyResponse {
+    isValid: boolean;
+    invalidReason?: string;
+    invalidMessage?: string;
+    payer?: string;
+  }
+
+  export interface SettleResponse {
+    success: boolean;
+    transaction?: string;
+    network?: string;
+    payer?: string;
+    errorReason?: string;
+    errorMessage?: string;
+  }
+
   export class x402ResourceServer {
-    constructor(facilitatorClients?: any);
+    constructor(facilitatorClients?: HTTPFacilitatorClient | HTTPFacilitatorClient[]);
     register(network: string, scheme: any): this;
+    hasRegisteredScheme(network: string, scheme: string): boolean;
+    registerExtension(extension: any): this;
+    hasExtension(key: string): boolean;
+    getExtensions(): any[];
+
+    // Lifecycle
     initialize(): Promise<void>;
-    verifyPayment(paymentPayload: any, requirements: any): Promise<any>;
-    settlePayment(paymentPayload: any, requirements: any, declaredExtensions?: any): Promise<any>;
+
+    // Payment processing — actual method names from SDK source
+    verifyPayment(paymentPayload: any, requirements: any): Promise<VerifyResponse>;
+    settlePayment(paymentPayload: any, requirements: any, declaredExtensions?: any): Promise<SettleResponse>;
+
+    // Hooks
+    onBeforeVerify(hook: (ctx: any) => Promise<any>): this;
+    onAfterVerify(hook: (ctx: any) => Promise<any>): this;
+    onVerifyFailure(hook: (ctx: any) => Promise<any>): this;
+    onBeforeSettle(hook: (ctx: any) => Promise<any>): this;
+    onAfterSettle(hook: (ctx: any) => Promise<any>): this;
+    onSettleFailure(hook: (ctx: any) => Promise<any>): this;
   }
 
   export class x402HTTPResourceServer {
-    constructor(resourceServer: any, routes: any);
+    constructor(resourceServer: x402ResourceServer, routes: any);
+    get server(): x402ResourceServer;
+    get routes(): any;
     initialize(): Promise<void>;
+    requiresPayment(context: { path: string; method: string }): boolean;
     processHTTPRequest(context: any, paywallConfig?: any): Promise<any>;
     processSettlement(paymentPayload: any, requirements: any, declaredExtensions?: any): Promise<any>;
   }
 
-  export class RouteConfigurationError extends Error {}
+  export class RouteConfigurationError extends Error {
+    errors: any[];
+  }
 }
