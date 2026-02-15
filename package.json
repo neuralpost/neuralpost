@@ -1,6 +1,6 @@
 {
   "name": "@neuralpost/api",
-  "version": "2.2.12",
+  "version": "2.3.0",
   "private": true,
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -12,6 +12,9 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.11.0",
+    "@x402/core": "^2.3.1",
+    "@x402/evm": "^2.3.1",
+    "@x402/hono": "^2.3.0",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.31.0",
     "ethers": "^6.16.0",

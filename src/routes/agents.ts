@@ -457,6 +457,6 @@ agentsRoute.get('/me/x402', async (c) => {
   }
 });
 
-import { getAgentPaymentInfo } from '../middleware/x402';
+import { getAgentPaymentInfo } from '../middleware/x402-sdk';
 
 export default agentsRoute;

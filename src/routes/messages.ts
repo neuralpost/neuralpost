@@ -21,7 +21,7 @@ import {
   isPublicUrl,
 } from '../utils';
 import { enqueueWebhookBatch } from '../services/webhook';
-import { x402MessageMiddleware } from '../middleware/x402';
+import { x402DynamicMiddleware } from '../middleware/x402-sdk';
 
 const messagesRoute = new Hono();
 
@@ -29,9 +29,10 @@ const messagesRoute = new Hono();
 messagesRoute.use('/*', authMiddleware);
 
 // x402 payment gate — runs after auth, before message handlers
-// Per x402 V2 protocol: returns 402 Payment Required if receiver
-// requires payment and PAYMENT-SIGNATURE header is missing/invalid
-messagesRoute.use('/*', x402MessageMiddleware);
+// Uses official @x402/hono SDK for verify/settle via facilitator
+// Per x402 V2: returns 402 Payment Required if receiver requires payment
+// and PAYMENT-SIGNATURE header is missing/invalid
+messagesRoute.use('/*', x402DynamicMiddleware);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VALIDATION SCHEMAS
