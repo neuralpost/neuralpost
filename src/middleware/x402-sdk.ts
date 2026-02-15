@@ -8,6 +8,10 @@
 //   1. Static paywall  — paymentMiddleware() for fixed routes (demo, premium API)
 //   2. Dynamic paywall — x402ResourceServer for per-agent pricing (messaging)
 //
+// Settlement pattern (per official SDK):
+//   verify → execute handler → settle (deferred settlement)
+//   If handler fails, payment is NOT settled (protects buyer)
+//
 // Network: Base Sepolia (testnet) → Base mainnet (production)
 // Facilitator: x402.org/facilitator (testnet) → CDP (mainnet)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -49,6 +53,7 @@ export function getX402SDKConfig() {
 // ─── Resource Server (shared singleton) ──────────────────────────────────
 
 let _resourceServer: InstanceType<typeof x402ResourceServer> | null = null;
+let _initPromise: Promise<void> | null = null;
 
 export function getResourceServer() {
   if (_resourceServer) return _resourceServer;
@@ -61,26 +66,51 @@ export function getResourceServer() {
   _resourceServer = new x402ResourceServer(facilitatorClient)
     .register(config.network, new ExactEvmScheme());
 
+  // Initialize once — fetches supported kinds from facilitator
+  // Required before verifyPayment/settlePayment can resolve facilitator clients
+  _initPromise = _resourceServer.initialize().catch(err => {
+    console.warn('[x402] Facilitator initialization warning:', err.message);
+  });
+
   return _resourceServer;
+}
+
+/** Ensure resource server is initialized before verify/settle */
+async function ensureInitialized() {
+  if (_initPromise) {
+    await _initPromise;
+    _initPromise = null;
+  }
+}
+
+// ─── Base64 Helpers ──────────────────────────────────────────────────────
+// Matches @x402/core internal decodePaymentSignatureHeader (not exported)
+
+function decodePaymentSignature(header: string): any {
+  try {
+    const json = Buffer.from(header, 'base64').toString('utf-8');
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function encodeBase64(obj: any): string {
+  return Buffer.from(JSON.stringify(obj)).toString('base64');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. STATIC PAYWALL — Official @x402/hono paymentMiddleware
 //    For fixed-price endpoints (demo, premium API, etc.)
+//
+//    The SDK handles the full flow internally:
+//      402 response → verify → execute handler → settle (deferred)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Create the official x402 paymentMiddleware for static routes.
- * 
- * Usage in app:
- *   app.use(createStaticPaywall());
- *   app.get('/x402/weather', (c) => c.json({ weather: 'sunny' }));
- */
 export function createStaticPaywall() {
   const config = getX402SDKConfig();
 
   if (!config.enabled || !config.platformWallet) {
-    // Return pass-through middleware if x402 is disabled
     return async (_c: Context, next: Next) => next();
   }
 
@@ -114,17 +144,17 @@ export function createStaticPaywall() {
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. DYNAMIC PAYWALL — Per-agent pricing for messaging
 //    Payments route directly to receiver agent's wallet (dynamic payTo)
+//
+//    Uses x402ResourceServer.verifyPayment() + settlePayment() directly
+//    (cannot use paymentMiddleware because payTo is dynamic per-recipient)
+//
+//    Settlement pattern (matching official SDK Hono middleware):
+//      1. verify payment
+//      2. await next() — execute message handler
+//      3. settle ONLY if handler status < 400 (deferred settlement)
+//      This protects buyers: if handler fails, payment is NOT settled.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * x402 Payment Middleware for POST /v1/messages
- * 
- * Uses official @x402/core ResourceServer for verify/settle
- * while supporting NeuralPost's dynamic payTo routing:
- *   - Each agent sets their own messagePrice
- *   - Payments go directly to receiver agent's wallet
- *   - NeuralPost never custodies payment funds
- */
 export async function x402DynamicMiddleware(c: Context, next: Next) {
   const config = getX402SDKConfig();
 
@@ -159,7 +189,6 @@ export async function x402DynamicMiddleware(c: Context, next: Next) {
     eq(agents.status, 'active'),
   ));
 
-  // Find most expensive paid recipient
   let paidRecipient: typeof recipients[0] | null = null;
   let highestPrice = 0;
 
@@ -173,18 +202,14 @@ export async function x402DynamicMiddleware(c: Context, next: Next) {
     }
   }
 
-  // No payment required — free message
   if (!paidRecipient || !paidRecipient.walletAddress || !paidRecipient.messagePrice) {
-    return next();
+    return next(); // Free message
   }
 
-  // ─── Check for PAYMENT-SIGNATURE header ──────────────────────────────
-  const paymentSignature = c.req.header('PAYMENT-SIGNATURE') || c.req.header('X-PAYMENT');
-
+  // ─── Build payment requirement (x402 v2) ─────────────────────────────
   const amount = usdToUsdcAmount(paidRecipient.messagePrice);
   const resourceUrl = new URL(c.req.url).pathname;
 
-  // Build payment requirement (x402 v2 format)
   const paymentRequirement = {
     scheme: 'exact' as const,
     network: config.network,
@@ -199,8 +224,12 @@ export async function x402DynamicMiddleware(c: Context, next: Next) {
     },
   };
 
-  if (!paymentSignature) {
-    // ─── Return 402 Payment Required ─────────────────────────────────
+  // ─── Check for PAYMENT-SIGNATURE header ──────────────────────────────
+  const paymentHeader = c.req.header('PAYMENT-SIGNATURE')
+    || c.req.header('payment-signature')
+    || c.req.header('X-PAYMENT');
+
+  if (!paymentHeader) {
     const paymentRequired = {
       x402Version: 2,
       error: 'Payment required',
@@ -212,59 +241,98 @@ export async function x402DynamicMiddleware(c: Context, next: Next) {
       accepts: [paymentRequirement],
     };
 
-    const paymentRequiredB64 = Buffer.from(
-      JSON.stringify(paymentRequired)
-    ).toString('base64');
-
     console.log(`[x402] 402 → ${paidRecipient.domain} ($${highestPrice} USDC)`);
 
     return c.json(paymentRequired, 402, {
-      'PAYMENT-REQUIRED': paymentRequiredB64,
+      'PAYMENT-REQUIRED': encodeBase64(paymentRequired),
     });
   }
 
-  // ─── Verify + Settle via official SDK ResourceServer ─────────────────
+  // ─── Decode base64 → PaymentPayload object ───────────────────────────
+  // Per x402 v2: PAYMENT-SIGNATURE header is base64-encoded JSON
+  const paymentPayload = decodePaymentSignature(paymentHeader);
+  if (!paymentPayload) {
+    return c.json({
+      x402Version: 2,
+      error: 'Invalid PAYMENT-SIGNATURE header (base64 decode failed)',
+      accepts: [paymentRequirement],
+    }, 402, {
+      'PAYMENT-REQUIRED': encodeBase64({
+        x402Version: 2,
+        error: 'Invalid payment signature',
+        accepts: [paymentRequirement],
+      }),
+    });
+  }
+
+  // ─── Verify + Settle via official SDK ────────────────────────────────
   try {
+    await ensureInitialized();
     const server = getResourceServer();
 
-    // Use the SDK's verify method
-    const verifyResult = await server.verify(paymentSignature, paymentRequirement);
+    // Step 1: Verify payment — server.verifyPayment(decodedPayload, requirement)
+    const verifyResult = await server.verifyPayment(paymentPayload, paymentRequirement);
 
     if (!verifyResult.isValid) {
       console.warn(`[x402] Verify failed: ${verifyResult.invalidReason}`);
       return c.json({
         x402Version: 2,
         error: `Payment verification failed: ${verifyResult.invalidReason}`,
+        resource: { url: resourceUrl, description: `Send message to ${paidRecipient.domain}` },
         accepts: [paymentRequirement],
-      }, 402);
+      }, 402, {
+        'PAYMENT-REQUIRED': encodeBase64({
+          x402Version: 2,
+          error: verifyResult.invalidReason,
+          accepts: [paymentRequirement],
+        }),
+      });
     }
 
-    // Use the SDK's settle method
-    const settleResult = await server.settle(paymentSignature, paymentRequirement);
+    console.log(`[x402] Payment verified for ${paidRecipient.domain}`);
+
+    // Step 2: Set context → execute handler
+    c.set('x402Payment', {
+      verified: true,
+      txHash: undefined,
+      amount,
+      network: config.network,
+      payTo: paidRecipient.walletAddress,
+      paidRecipientDomain: paidRecipient.domain,
+    });
+
+    await next();
+
+    // Step 3: Deferred settlement — only if handler succeeded
+    const responseStatus = c.res?.status || 200;
+    if (responseStatus >= 400) {
+      console.log(`[x402] Handler returned ${responseStatus} — skipping settlement (buyer protected)`);
+      return;
+    }
+
+    // server.settlePayment(decodedPayload, requirement)
+    const settleResult = await server.settlePayment(paymentPayload, paymentRequirement);
 
     if (!settleResult.success) {
       console.error(`[x402] Settle failed: ${settleResult.errorReason}`);
+      c.res = undefined as any;
       return c.json({
-        error: `Payment settlement failed: ${settleResult.errorReason}`,
+        error: `Payment settlement failed: ${settleResult.errorReason || settleResult.errorMessage}`,
       }, 502);
     }
 
     console.log(`[x402] Settled: tx=${settleResult.transaction}, network=${settleResult.network}`);
 
-    // ─── Record payment in DB ────────────────────────────────────────
-    const senderAgent = c.get('agent') as { id: string } | undefined;
-    if (senderAgent && paidRecipient.id) {
-      recordPayment({
-        fromAgentId: senderAgent.id,
-        toAgentId: paidRecipient.id,
-        amount,
-        txHash: settleResult.transaction || '',
-        network: config.network,
-        paymentSignature,
-      }).catch(err => console.error('[x402] Record error:', err));
+    // Step 4: Attach PAYMENT-RESPONSE header
+    if (c.res) {
+      c.res.headers.set('PAYMENT-RESPONSE', encodeBase64({
+        x402Version: 2,
+        success: true,
+        transaction: settleResult.transaction,
+        network: settleResult.network,
+      }));
     }
 
-    // Set context for downstream handlers
     c.set('x402Payment', {
       verified: true,
       txHash: settleResult.transaction,
@@ -274,15 +342,18 @@ export async function x402DynamicMiddleware(c: Context, next: Next) {
       paidRecipientDomain: paidRecipient.domain,
     });
 
-    // PAYMENT-RESPONSE header (x402 v2)
-    c.header('PAYMENT-RESPONSE', Buffer.from(JSON.stringify({
-      x402Version: 2,
-      success: true,
-      transaction: settleResult.transaction,
-      network: settleResult.network,
-    })).toString('base64'));
-
-    return next();
+    // Record payment (async, non-blocking)
+    const senderAgent = c.get('agent') as { id: string } | undefined;
+    if (senderAgent && paidRecipient.id) {
+      recordPayment({
+        fromAgentId: senderAgent.id,
+        toAgentId: paidRecipient.id,
+        amount,
+        txHash: settleResult.transaction || '',
+        network: config.network,
+        paymentSignature: paymentHeader,
+      }).catch(err => console.error('[x402] Record error:', err));
+    }
 
   } catch (err: any) {
     console.error('[x402] SDK error:', err.message);
@@ -292,6 +363,7 @@ export async function x402DynamicMiddleware(c: Context, next: Next) {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 3. A2A x402 MIDDLEWARE — Dynamic paywall for A2A routes
+//    Same deferred settlement pattern as messaging middleware
 // ═══════════════════════════════════════════════════════════════════════════
 
 export async function x402A2ADynamicMiddleware(c: Context, next: Next) {
@@ -320,7 +392,6 @@ export async function x402A2ADynamicMiddleware(c: Context, next: Next) {
   const price = parseFloat(targetAgent.messagePrice.replace(DOLLAR_PREFIX_RE, ''));
   if (price <= 0) return next();
 
-  const paymentSignature = c.req.header('PAYMENT-SIGNATURE') || c.req.header('X-PAYMENT');
   const amount = usdToUsdcAmount(targetAgent.messagePrice);
 
   const paymentRequirement = {
@@ -337,7 +408,11 @@ export async function x402A2ADynamicMiddleware(c: Context, next: Next) {
     },
   };
 
-  if (!paymentSignature) {
+  const paymentHeader = c.req.header('PAYMENT-SIGNATURE')
+    || c.req.header('payment-signature')
+    || c.req.header('X-PAYMENT');
+
+  if (!paymentHeader) {
     const paymentRequired = {
       x402Version: 2,
       error: 'Payment required',
@@ -349,20 +424,49 @@ export async function x402A2ADynamicMiddleware(c: Context, next: Next) {
       accepts: [paymentRequirement],
     };
     return c.json(paymentRequired, 402, {
-      'PAYMENT-REQUIRED': Buffer.from(JSON.stringify(paymentRequired)).toString('base64'),
+      'PAYMENT-REQUIRED': encodeBase64(paymentRequired),
     });
   }
 
-  try {
-    const server = getResourceServer();
-    const verifyResult = await server.verify(paymentSignature, paymentRequirement);
+  // Decode base64 → PaymentPayload
+  const paymentPayload = decodePaymentSignature(paymentHeader);
+  if (!paymentPayload) {
+    return c.json({ error: 'Invalid PAYMENT-SIGNATURE header' }, 402);
+  }
 
+  try {
+    await ensureInitialized();
+    const server = getResourceServer();
+
+    // Verify
+    const verifyResult = await server.verifyPayment(paymentPayload, paymentRequirement);
     if (!verifyResult.isValid) {
-      return c.json({ error: `Payment verification failed: ${verifyResult.invalidReason}` }, 402);
+      return c.json({
+        x402Version: 2,
+        error: `Payment verification failed: ${verifyResult.invalidReason}`,
+        accepts: [paymentRequirement],
+      }, 402);
     }
 
-    const settleResult = await server.settle(paymentSignature, paymentRequirement);
+    // Set context + execute handler
+    c.set('x402Payment', {
+      verified: true,
+      txHash: undefined,
+      amount,
+      network: config.network,
+      payTo: targetAgent.walletAddress,
+      paidRecipientDomain: targetAgent.domain,
+    });
+
+    await next();
+
+    // Deferred settlement — only if handler succeeded
+    const responseStatus = c.res?.status || 200;
+    if (responseStatus >= 400) return;
+
+    const settleResult = await server.settlePayment(paymentPayload, paymentRequirement);
     if (!settleResult.success) {
+      c.res = undefined as any;
       return c.json({
         jsonrpc: '2.0', id: null,
         error: { code: -32000, message: `Settlement failed: ${settleResult.errorReason}` },
@@ -371,6 +475,15 @@ export async function x402A2ADynamicMiddleware(c: Context, next: Next) {
 
     console.log(`[x402] A2A settled: tx=${settleResult.transaction}`);
 
+    if (c.res) {
+      c.res.headers.set('PAYMENT-RESPONSE', encodeBase64({
+        x402Version: 2, success: true,
+        transaction: settleResult.transaction,
+        network: settleResult.network,
+      }));
+    }
+
+    // Record payment
     const senderAgent = c.get('agent') as { id: string } | undefined;
     recordPayment({
       fromAgentId: senderAgent?.id || targetAgent.id,
@@ -378,25 +491,9 @@ export async function x402A2ADynamicMiddleware(c: Context, next: Next) {
       amount,
       txHash: settleResult.transaction || '',
       network: config.network,
-      paymentSignature,
+      paymentSignature: paymentHeader,
     }).catch(err => console.error('[x402] A2A record error:', err));
 
-    c.set('x402Payment', {
-      verified: true,
-      txHash: settleResult.transaction,
-      amount,
-      network: config.network,
-      payTo: targetAgent.walletAddress,
-      paidRecipientDomain: targetAgent.domain,
-    });
-
-    c.header('PAYMENT-RESPONSE', Buffer.from(JSON.stringify({
-      x402Version: 2, success: true,
-      transaction: settleResult.transaction,
-      network: settleResult.network,
-    })).toString('base64'));
-
-    return next();
   } catch (err: any) {
     console.error('[x402] A2A SDK error:', err.message);
     return c.json({ error: `Payment error: ${err.message}` }, 502);
