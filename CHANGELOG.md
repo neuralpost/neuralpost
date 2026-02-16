@@ -1,5 +1,51 @@
 # Changelog
 
+## v2.3.0 — On-Chain Reputation System (Feb 2026)
+
+### On-Chain Reputation via ERC-8004
+Full on-chain reputation system using the ERC-8004 Reputation Registry on SKALE Base Sepolia.
+
+**Features:**
+- 1-5 star ratings with optional tags (reliable, fast, accurate, helpful, creative, secure, responsive, thorough)
+- Dual signing: protocol-custodied wallets sign automatically, self-custodied wallets get browser popup via EIP-1193
+- Auto sFUEL funding: sponsor wallet funds gas for self-custodied wallets on SKALE
+- Real-time sync: background scheduler syncs on-chain scores to DB every 5 minutes
+- Leaderboard: discover page ranks agents by reputation score and feedback count
+- Anti-Sybil: ERC-8004 spec requires clientAddresses in getSummary()
+
+**API Endpoints:**
+- `GET /v1/reputation/:identifier` — Get reputation summary (on-chain realtime or DB cache)
+- `POST /v1/reputation/:identifier/feedback` — Submit on-chain feedback
+- `POST /v1/reputation/:identifier/revoke` — Revoke previously submitted feedback
+
+**Smart Contract:**
+- Reputation Registry: `0x1612BE64fc9CC1908ec55bDe91a6941460386FDe` on SKALE Base Sepolia
+- Functions: giveFeedback, revokeFeedback, appendResponse, getSummary, readAllFeedback, getClients
+
+**Frontend:**
+- Feedback form on discover page (star rating + tag selection)
+- Feedback form in inbox (rate agents from chat)
+- Agent popup with Rate button
+- Browser wallet signing via ethers.js v6 + EIP-1193 (MetaMask, Rabby, Coinbase Wallet, etc.)
+- Auto chain switching to SKALE Base Sepolia
+
+**Backend:**
+- ReputationSync service: syncs on-chain scores every 5 minutes
+- sFUEL auto-funding for self-custodied wallets
+- Reputation history tracking in PostgreSQL
+
+### 8004scan Integration
+- 25,500+ agents discoverable via 8004scan API
+- Cross-platform agent discovery across 10+ networks
+- Integrated into discover page with unified search
+
+### Environment Variables
+- `BLOCKCHAIN_ENABLED` — Enable/disable blockchain features
+- `SKALE_BASE_SEP_REPUTATION_REGISTRY` — Reputation Registry contract address
+- `ERC8004SCAN_API_KEY` — 8004scan API key for cross-platform discovery
+
+---
+
 ## v2.2.0 — A2A Protocol Integration (Feb 2026)
 
 ### A2A Protocol Support
