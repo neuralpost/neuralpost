@@ -22,8 +22,7 @@ import { startCleanupScheduler, stopCleanupScheduler } from './services/cleanup'
 import { startWebhookProcessor, stopWebhookProcessor } from './services/webhook';
 import { stopScanCachePrune } from './services/erc8004scan';
 import { rateLimiter, rateLimitCleanupInterval } from './middleware/rateLimit';
-import { createStaticPaywall, x402DynamicMiddleware, x402A2ADynamicMiddleware } from './middleware/x402-sdk';
-import { x402Route } from './routes/x402';
+import { x402MessageMiddleware, x402A2AMiddleware } from './middleware/x402';
 
 // Create app
 const app = new Hono();
@@ -106,7 +105,6 @@ app.use('/v1/agents/search', rateLimiter(150, 60_000));   // 150 searches/min
 app.use('/v1/connections', rateLimiter(150, 60_000));     // 150 connection ops/min
 app.use('/v1/discover', rateLimiter(150, 60_000));        // 150 discovery searches/min
 app.use('/v1/threads/*/messages', rateLimiter(300, 60_000)); // 300 replies/min
-app.use('/v1/x402/*', rateLimiter(100, 60_000));            // 100 x402 requests/min
 
 // ═══════════════════════════════════════════════════════════════════════════
 // API ROUTES (v1)
@@ -122,7 +120,6 @@ api.route('/threads', threadsRoute);
 api.route('/connections', connectionsRoute);
 api.route('/discover', discoverRoute);
 api.route('/admin', adminRoute);
-api.route('/x402', x402Route);
 
 // Health check
 api.get('/health', (c) => {
@@ -133,9 +130,8 @@ api.get('/health', (c) => {
   });
 });
 
-// x402 static paywall — protects /v1/x402/weather and /v1/x402/agent-search
-// Uses official @x402/hono SDK paymentMiddleware (verify + settle via facilitator)
-app.use('/v1/x402/*', createStaticPaywall());
+// x402 payment gate for message routes (after rate limit, before handlers)
+app.use('/v1/messages', x402MessageMiddleware);
 
 // Mount API under /v1
 app.route('/v1', api);
@@ -162,7 +158,7 @@ app.use('/a2a/*', rateLimiter(500, 60_000));  // 500 A2A requests/min
 
 // x402 payment gate for A2A routes (after rate limit, before handlers)
 // Uses official @x402/hono SDK for verify/settle via facilitator
-app.use('/a2a/:agentId', x402A2ADynamicMiddleware);
+app.use('/a2a/:agentId', x402A2AMiddleware);
 
 // Root-level Agent Card (A2A spec v0.3 requirement)
 // External clients discover platform at /.well-known/agent-card.json
@@ -416,7 +412,7 @@ console.log(`
 ║    ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝                    ║
 ║                                                               ║
 ║    Email for AI Agents                                        ║
-║    v2.3.0 — x402 Payment Protocol (@x402/hono SDK)          ║
+║    v2.3.0 — x402 Payment Protocol (V2 middleware)          ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 
@@ -425,7 +421,7 @@ Server:    http://localhost:${port}
 🔗 A2A:       http://localhost:${port}/a2a
 🔍 Discover:  http://localhost:${port}/v1/discover
 💚 Health:    http://localhost:${port}/v1/health
-💰 x402:      http://localhost:${port}/v1/x402/status
+💰 x402:      enabled on /v1/messages + /a2a/:agentId
 📨 Webhooks:  Processor running (auto-delivery)
 🌐 Frontend:  http://localhost:${port}
 `);
